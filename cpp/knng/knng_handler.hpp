@@ -37,18 +37,19 @@ private:
   int my_leaf_start_index;
   int my_leaf_end_index;
 
-  int *receive_random_seeds() {
-    int* receive = new int[grid->col_world_size]();
+    uint64_t *receive_random_seeds() {
+      uint64_t* receive = new uint64_t[grid->col_world_size]();
     if (grid->rank_in_col== 0) {
+        std::random_device rd;
+        uint64_t seed = rd();
       for (int i = 0; i < grid->col_world_size; i++)
       {
-        std::random_device rd;
-        int seed = rd();
+
         receive[i] = seed;
       }
-      MPI_Bcast(receive, grid->col_world_size, MPI_INT, grid->rank_in_col, grid->col_world);
+      MPI_Bcast(receive, grid->col_world_size, MPI_UINT64_T, grid->rank_in_col, grid->col_world);
     } else {
-      MPI_Bcast(receive, grid->col_world_size, MPI_INT, NULL, grid->col_world);
+      MPI_Bcast(receive, grid->col_world_size, MPI_UINT64_T, NULL, grid->col_world);
     }
     return receive;
   }
@@ -78,9 +79,8 @@ public:
                               bool skip_self_loops=true) {
 
     unique_ptr<MathOp<INDEX_TYPE,VALUE_TYPE>> mathOp_ptr; //class uses for math operations
-    cout << " rank " << grid->rank_in_col << "convert_to_row_major_format started" << endl;
+
     VALUE_TYPE* row_data_array = mathOp_ptr.get()->convert_to_row_major_format(input_data,grid->rank_in_col); // this algorithm assumes row major format for operations
-    cout << " rank " << grid->rank_in_col << "convert_to_row_major_format completed" << endl;
     int global_tree_depth = this->tree_depth * this->tree_depth_ratio;
 
     // generate random seed at process 0 and broadcast it to multiple processes.
@@ -95,11 +95,16 @@ public:
       shared_ptr<vector<set<INDEX_TYPE>>> process_to_index_set_ptr = make_shared<vector<set<INDEX_TYPE>>>(grid->col_world_size);
       shared_ptr<vector<set<INDEX_TYPE>>> remote_index_distribution =  make_shared<vector<set<INDEX_TYPE>>>(grid->col_world_size);
 
-      int* receive = this->receive_random_seeds();
+      uint64_t * receive = this->receive_random_seeds();
       // build global sparse random project matrix for all trees
+
+      cout<<" rank "<<grid->rank_in_col<<" seed "<<receive[0]<<" density "<<density<<endl;
+
       VALUE_TYPE *B = mathOp_ptr.get()->build_sparse_projection_matrix(
           this->data_dimension, global_tree_depth , density,
           receive[0]);
+
+
       cout << " rank " << grid->rank_in_col
            << "build_sparse_projection_matrix completed" << endl;
       // get the matrix projection
@@ -109,6 +114,11 @@ public:
           global_tree_depth, this->local_data_set_size, 1.0);
       cout << " rank " << grid->rank_in_col << " projected matrix created"
            << endl;
+
+//        FileWriter<int, float, 2> fileWriter;
+//        fileWriter.parallel_write<float>("/pscratch/sd/i/isjarana/benchmarking/inputs/laborflow/1024/row.txt", row_data_array, this->local_data_set_size,
+//                                         this->data_dimension);
+
       // creating DRPTGlobal class
       GlobalTreeHandler<INDEX_TYPE, VALUE_TYPE> drpt_global = GlobalTreeHandler<INDEX_TYPE, VALUE_TYPE>(
               P, B, this->grid, this->local_data_set_size, this->data_dimension,
@@ -124,22 +134,16 @@ public:
       //
       //	//calculate locality optimization to improve data locality
       if (use_locality_optimization) {
-        cout << " rank " << grid->rank_in_col
-             << " starting tree leaf correlation " << endl;
+        cout << " rank " << grid->rank_in_col << " starting tree leaf correlation " << endl;
         drpt_global.calculate_tree_leaf_correlation();
-        cout << " rank " << grid->rank_in_col
-             << "  tree leaf correlation completed " << endl;
+        cout << " rank " << grid->rank_in_col << "  tree leaf correlation completed " << endl;
       }
 
-      shared_ptr<DataNode3DVector<INDEX_TYPE, VALUE_TYPE>>
-          leaf_nodes_of_trees_ptr =
-              make_shared<DataNode3DVector<INDEX_TYPE, VALUE_TYPE>>(1);
+      shared_ptr<DataNode3DVector<INDEX_TYPE, VALUE_TYPE>> leaf_nodes_of_trees_ptr = make_shared<DataNode3DVector<INDEX_TYPE, VALUE_TYPE>>(1);
 
-      cout << " rank " << grid->rank_in_col
-           << " running  datapoint collection  " << endl;
+      cout << " rank " << grid->rank_in_col << " running  datapoint collection  " << endl;
 
-      shared_ptr<vector<VALUE_TYPE>> receive_values_ptr =
-          make_shared<vector<VALUE_TYPE>>();
+      shared_ptr<vector<VALUE_TYPE>> receive_values_ptr = make_shared<vector<VALUE_TYPE>>();
 
       drpt_global.collect_similar_data_points_of_all_trees(
           receive_values_ptr.get(), use_locality_optimization,
@@ -151,8 +155,7 @@ public:
       Eigen::Map<Eigen::MatrixXf> data_matrix(
           (*receive_values_ptr).data(), data_dimension, total_receive_count);
 
-      cout << "rank " << grid->rank_in_col << " rows " << (data_matrix).rows()
-           << " cols " << (data_matrix).cols() << endl;
+      cout << "rank " << grid->rank_in_col << " rows " << (data_matrix).rows() << " cols " << (data_matrix).cols() << endl;
 
       //    int effective_nn = 2 * nn;
       int effective_nn = nn;
@@ -233,7 +236,7 @@ public:
 
     if (print_output) {
       auto t = start_clock();
-      FileWriter<INDEX_TYPE,VALUE_TYPE> fileWriter;
+      FileWriter<INDEX_TYPE,VALUE_TYPE,2> fileWriter;
       fileWriter.mpi_write_edge_list(final_nn_map.get(),output_path,nn-1,grid->rank_in_col,grid->col_world_size,true);
       stop_clock_and_add(t, "IO Time");
     }
@@ -248,64 +251,31 @@ public:
           tuple.row = edge_node.src_index;
           tuple.col = edge_node.dst_index;
           tuple.value = edge_node.distance;
-          (*output_knng).push_back(tuple);
+          if (edge_node.src_index>=0 and edge_node.src_index<global_data_set_size and edge_node.dst_index>=0 and edge_node.dst_index<global_data_set_size) {
+              (*output_knng).push_back(tuple);
+          }
         }
       }
     }
   }
 
   MrptSparse build_local_KNNG_Sparse(Eigen::SparseMatrix<float,Eigen::RowMajor> &sparse_matrix, vector<Tuple<VALUE_TYPE>> *output_knng,int nn, float target_recall,
-                        bool print_output =false, string output_path="knng.txt", bool skip_self_loops=true,float density = -1.0,
-                                     int nn_repulsive =-1,vector<Tuple<VALUE_TYPE>> *repulsive=nullptr) {
+                        bool print_output =false, string output_path="knng.txt", bool skip_self_loops=true,float density = -1.0, bool skip_auto_tune=false) {
 
     //    int effective_nn = 2 * nn;
+//    auto t = start_clock();
     int effective_nn = nn;
-    if (nn_repulsive>0 and repulsive != nullptr) {
-      effective_nn = nn+nn_repulsive;
-      repulsive->resize(sparse_matrix.cols()*nn_repulsive);
-    }
     cout<<" sparse_matrix size"<<sparse_matrix.rows()<<" * "<<sparse_matrix.cols()<<endl;
     MrptSparse mrpt(sparse_matrix);
-
-    cout<<" mrpt completed"<<endl;
-    mrpt.grow_autotune(target_recall, effective_nn,  -1, -1,   -1,-1, density,0,  100);
+    mrpt.grow_autotune(target_recall, effective_nn,  -1, -1,   -1,-1, density,0,  100,skip_auto_tune);
     cout<<" grow_autotune completed"<<endl;
-    Eigen::MatrixXi neighbours(sparse_matrix.cols(),effective_nn);
-    Eigen::MatrixXf distances(sparse_matrix.cols(),effective_nn);
-
     output_knng->resize(sparse_matrix.cols()*effective_nn);
+    mrpt.build_knng_graph(output_knng);
+    cout<<" build_knng_graph completed"<<endl;
 
-
-#pragma omp parallel for schedule (static)
-    for(int i=0;i<sparse_matrix.cols();i++){
-      Eigen::VectorXi tempRow(effective_nn);
-      Eigen::VectorXf tempDis(effective_nn);
-      Eigen::SparseVector<float> q = sparse_matrix.col(i);
-//      Eigen::VectorXf q_dens = Eigen::VectorXf(q);
-      mrpt.query_sparse(q, tempRow.data(),tempDis.data());
-      neighbours.row(i)=tempRow;
-      distances.row(i)=tempDis;
-    }
-
-#pragma omp parallel for schedule(static)
-    for(int i=0;i<sparse_matrix.cols()*effective_nn;i++){
-      int node_index = i/effective_nn;
-      int nn_index = i%effective_nn;
-      Tuple<VALUE_TYPE> edge;
-      edge.row = node_index;
-      edge.col =   neighbours(node_index,nn_index);
-      edge.value = distances(node_index,nn_index);
-      double max_value = distances(node_index,nn-1);
-      edge.value =  edge.value/max_value;
-      if (nn_repulsive>0 and i >= nn){
-//        (*repulsive)[i-nn]=edge;
-      }else {
-        (*output_knng)[i]  = edge;
-      }
-    }
-
+//    stop_clock_and_add(t, "KNNG Total Time");
     if (print_output) {
-      FileWriter<INDEX_TYPE,VALUE_TYPE> fileWriter;
+      FileWriter<INDEX_TYPE,VALUE_TYPE,2> fileWriter;
       fileWriter.write_list(output_knng,output_path);
     }
     return mrpt;
@@ -320,7 +290,8 @@ public:
     Mrpt mrpt(data_matrix);
     mrpt.grow_autotune(target_recall, effective_nn,  -1, -1,
                        -1,-1, density,0,  100);
-
+    cout<<" auto tune completed "<<endl;
+//    mrpt.build_knng_graph(output_knng);
     Eigen::MatrixXi neighbours(data_matrix.cols(),effective_nn);
     Eigen::MatrixXf distances(data_matrix.cols(),effective_nn);
 
@@ -343,9 +314,9 @@ public:
         edge.value = distances(node_index,nn_index);
         (*output_knng)[i]  = edge;
       }
-
+      cout<<" KNNG fill completed "<<endl;
       if (print_output) {
-        FileWriter<INDEX_TYPE,VALUE_TYPE> fileWriter;
+        FileWriter<INDEX_TYPE,VALUE_TYPE,2> fileWriter;
         fileWriter.parallel_write_knng(grid,output_path,output_knng,false);
       }
    return mrpt;

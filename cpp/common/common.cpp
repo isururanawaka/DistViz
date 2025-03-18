@@ -48,18 +48,30 @@ size_t hipgraph::distviz::common::get_memory_usage() {
   return 0;
 }
 
-int32_t tau_rand_int(int64_t state[3]) {
-  state[0] = (((state[0] & 4294967294LL) << 12) & 0xFFFFFFFFLL) ^ (
-                                                                      (((state[0] << 13) & 0xFFFFFFFFLL) ^ state[0]) >> 19
-                                                                  );
-  state[1] = (((state[1] & 4294967288LL) << 4) & 0xFFFFFFFFLL) ^ (
-                                                                     (((state[1] << 2) & 0xFFFFFFFFLL) ^ state[1]) >> 25
-                                                                 );
-  state[2] = (((state[2] & 4294967280LL) << 17) & 0xFFFFFFFFLL) ^ (
-                                                                      (((state[2] << 3) & 0xFFFFFFFFLL) ^ state[2]) >> 11
-                                                                  );
+uint64_t  hipgraph::distviz::common::tau_rand_int(std::array<uint64_t,4> shuffle_table) {
+    uint64_t s1 = shuffle_table[0];
+    uint64_t s0 = shuffle_table[1];
+    uint64_t result = s0 + s1;
+    shuffle_table[0] = s0;
+    s1 ^= s1 << 23;
+    shuffle_table[1] = s1 ^ s0 ^ (s1 >> 18) ^ (s0 >> 5);
+    return result;
+}
 
-  return static_cast<int32_t>(state[0] ^ state[1] ^ state[2]);
+uint64_t  hipgraph::distviz::common::xorshift64(uint64_t* state) {
+  uint64_t x = *state;
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  *state = x;
+  return x;
+}
+
+void hipgraph::distviz::common::initialize_shuffle_table(std::array<uint64_t,4>& shuffle_table) {
+  uint64_t seed = static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count());
+  for (auto &val : shuffle_table) {
+    val =  hipgraph::distviz::common::xorshift64(&seed); // Use xorshift64 to initialize the table
+  }
 }
 
 void hipgraph::distviz::common::reset_performance_timers() {

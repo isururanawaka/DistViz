@@ -65,16 +65,29 @@ public:
   /**
    * Initialize the CSR from (*coords) data structure
    */
-  void initialize_CSR_blocks() {
+  void initialize_CSR_blocks(bool sort=false) {
+    cout<<" rank "<<this->grid->rank_in_col<<" trying to initialize "<<endl;
 
-#pragma omp parallel for
+    if (sort){
+      if (col_partitioned){
+        std::sort((*coords).begin(), (*coords).end(),column_major<VALUE_TYPE>);
+      } else {
+        std::sort((*coords).begin(), (*coords).end(),row_major<VALUE_TYPE>);
+      }
+    }
+     #pragma omp parallel for
     for (uint64_t i = 0; i < (*coords).size(); i++) {
       if (col_partitioned) {
         (*coords)[i].col %= proc_col_width;
       } else {
         (*coords)[i].row %= proc_row_width;
+//        if ((*coords)[i].col>= this->gCols) {
+//            cout<<" rank "<<this->grid->rank_in_col<<" col index outdated  "<<(*coords)[i].col<<endl;
+//        }
       }
     }
+
+    cout<<" rank "<<this->grid->rank_in_col<<" data filling completed "<<endl;
 
     Tuple<VALUE_TYPE> *coords_ptr = (*coords).data();
     if (col_partitioned) {
@@ -84,9 +97,9 @@ public:
                                    coords_ptr, (*coords).size(), transpose);
     } else {
       // This is used to find receiving indices and computations
+
       csr_local_data =
-          make_unique<CSRLocal<INDEX_TYPE,VALUE_TYPE>>(proc_row_width, gCols, (*coords).size(),
-                                   coords_ptr, (*coords).size(), transpose);
+          make_unique<CSRLocal<INDEX_TYPE,VALUE_TYPE>>(proc_row_width, gCols, (*coords).size(), coords_ptr, (*coords).size(), transpose);
     }
   }
 
@@ -119,17 +132,17 @@ public:
       procs.push_back(target);
     }
 
-
+    ofstream fout;
+    fout.open("/global/homes/i/isjarana/distviz_executions/perf_comparison/DistViz/MNIST/acesss_ids.txt", std::ios_base::app);
     if (col_partitioned) {
       for (int r = 0 ; r < procs.size(); r++) {
         uint64_t starting_index = batch_id * batch_size + proc_row_width * procs[r];
-        auto end_index =
-            std::min(std::min((starting_index+batch_size),static_cast<uint64_t>((procs[r] + 1) * proc_row_width)), gRows);
-
+        auto end_index =  std::min(std::min((starting_index+batch_size),static_cast<uint64_t>((procs[r] + 1) * proc_row_width)), gRows);
         for (auto i = starting_index; i < end_index; i++) {
           if (rank != procs[r] and (handle->rowStart[i + 1] - handle->rowStart[i]) > 0) {
             for (auto j = handle->rowStart[i]; j < handle->rowStart[i + 1];j++) {
               auto col_val = handle->col_idx[j];
+             // fout<<(i+1)<<" "<<(col_val+1)+proc_row_width * rank<<" "<< handle->values[j]<<endl;
               { (*proc_to_id_mapping)[procs[r]].insert(col_val);
                 (*id_to_proc_mapping)[col_val][procs[r]] = true;
               }

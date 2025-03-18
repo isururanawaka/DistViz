@@ -10,11 +10,13 @@
 #include <mpi.h>
 #include <random>
 #include <unordered_map>
+#include "../io/file_writer.hpp"
 
 using namespace std;
 using namespace Eigen;
 using namespace hipgraph::distviz::net;
 using namespace hipgraph::distviz::common;
+using namespace hipgraph::distviz::io;
 
 namespace hipgraph::distviz::embedding {
 
@@ -42,7 +44,7 @@ public:
    * @param std  initialize with normal distribution with given standard
    * deviation
    */
-  DenseMat(Process3DGrid *grid, uint64_t rows) {
+  DenseMat(Process3DGrid *grid, uint64_t rows,bool initialize=true) {
 
     this->rows = rows;
     this->grid = grid;
@@ -57,11 +59,27 @@ public:
         grid->col_world_size);
     nCoordinates =
         static_cast<DENT *>(::operator new(sizeof(DENT[rows * embedding_dim])));
+    uint64_t seed=0;
+    if (grid->rank_in_col==0){
+      std::random_device rd;
+      seed  = rd();
+    }
+    MPI_Bcast(&seed, 1, MPI_UINT64_T, 0, grid->col_world);
+
+    std::mt19937_64 gen(seed);
+    //    gen.seed(seed);
+    int subset_start = rows* grid->rank_in_col*embedding_dim;
+    gen.discard(subset_start);
+
+    std::uniform_int_distribution<int> dist(0, RAND_MAX);
+
 //    std::srand(this->grid->global_rank);
-    for (int i = 0; i < rows; i++) {
-      for (int j = 0; j < embedding_dim; j++) {
-        DENT val = -1.0 + 2.0 * rand() / (RAND_MAX + 1.0);
-        nCoordinates[i * embedding_dim + j] = val;
+    if (initialize) {
+      for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < embedding_dim; j++) {
+          DENT val = -1.0 + 2.0 * dist(gen) / (RAND_MAX + 1.0);
+          nCoordinates[i * embedding_dim + j] = val;
+        }
       }
     }
   }
@@ -153,46 +171,55 @@ public:
 
   void print_matrix_rowptr(int iter) {
     int rank= grid->rank_in_col;
-    string output_path =
-        "rank_" + to_string(rank) + "itr_" + to_string(iter) + "_embedding.txt";
-    char stats[500];
-    strcpy(stats, output_path.c_str());
-    ofstream fout(stats, std::ios_base::app);
-    //    fout << (*this->matrixPtr).rows() << " " << (*this->matrixPtr).cols()
-    //         << endl;
-    for (int i = 0; i < rows; ++i) {
-      fout << i  + rank * rows << " ";
-      for (int j = 0; j < embedding_dim; ++j) {
-        fout << this->nCoordinates[i * embedding_dim + j] << " ";
-      }
-      fout << endl;
-    }
+    string output_path =to_string(iter) + "_embedding.txt";
+//    char stats[500];
+//    strcpy(stats, output_path.c_str());
+//    ofstream fout(stats, std::ios_base::app);
+//    //    fout << (*this->matrixPtr).rows() << " " << (*this->matrixPtr).cols()
+//    //         << endl;
+//    for (int i = 0; i < rows; ++i) {
+//      fout << i  + rank * rows +1 << " ";
+//      for (int j = 0; j < embedding_dim; ++j) {
+//        fout << this->nCoordinates[i * embedding_dim + j] << " ";
+//      }
+//      fout << endl;
+//    }
+
+    FileWriter<int,float,embedding_dim> fileWriter;
+    fileWriter.parallel_write(output_path,this->nCoordinates,rows, embedding_dim);
   }
 
   void print_cache(int iter) {
     int rank = grid->rank_in_col;
-
-    for (int i = 0; i < (*this->cachePtr).size(); i++) {
-      unordered_map<uint64_t, CacheEntry<DENT, embedding_dim>> map =
-          (*this->cachePtr)[i];
+    cout<<" rank "<<rank<<" cache  size "<<(*this->tempCachePtr).size()<<endl;
+//    for (int i = 0; i < (*this->tempCachePtr).size(); i++) {
+//      unordered_map<uint64_t, CacheEntry<DENT, embedding_dim>>& map =
+////          (*this->cachePtr)[i];
 //      (*this->tempCachePtr)[i];
 
-      string output_path = "rank_" + to_string(rank) + "remote_rank_" +
-                           to_string(i) + " itr_" + to_string(iter) + ".txt";
-      char stats[500];
-      strcpy(stats, output_path.c_str());
-      ofstream fout(stats, std::ios_base::app);
 
-      for (const auto &kvp : map) {
-        uint64_t key = kvp.first;
-        const std::array<DENT, embedding_dim> &value = kvp.second.value;
-        fout << key << " ";
-        for (int i = 0; i < embedding_dim; ++i) {
-          fout << value[i] << " ";
-        }
-        fout << std::endl;
-      }
-    }
+      string output_path = "cache.txt";
+//      char stats[500];
+//      strcpy(stats, output_path.c_str());
+//      ofstream fout(stats, std::ios_base::app);
+//
+//      int size = map.size();
+//      int total_st = size*embedding_dim;
+//
+//      DENT*  coord[size*embedding_dim];
+//
+//      for (const auto &kvp : map) {
+//        uint64_t key = kvp.first;
+//        const std::array<DENT, embedding_dim> &value = kvp.second.value;
+//        fout << (key +1)<< " ";
+//        for (int i = 0; i < embedding_dim; ++i) {
+//          fout << value[i] << " ";
+//        }
+////        fout << std::endl;
+//      }
+      FileWriter<int,float,embedding_dim> fileWriter;
+      fileWriter.parallel_write_map(output_path,this->tempCachePtr.get());
+//    }
   }
 
   bool searchForKey(uint64_t key) {

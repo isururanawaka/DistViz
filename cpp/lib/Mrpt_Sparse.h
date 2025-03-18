@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "../common/common.h"
 
 #include <Eigen/Dense>
 #include <Eigen/SparseCore>
@@ -134,6 +135,7 @@ public:
 
     count_first_leaf_indices_all(leaf_first_indices_all, n_samples, depth);
     leaf_first_indices = leaf_first_indices_all[depth];
+    index_to_tree_leaf_match = std::vector<std::vector<int>>(n_samples,std::vector<int>(n_trees));
 
     #pragma omp parallel for
     for (int n_tree = 0; n_tree < n_trees; ++n_tree) {
@@ -263,13 +265,13 @@ public:
   void grow_sparse(double target_recall, Eigen::SparseMatrix<float> &Q, int n_test, int k_,
             int trees_max = -1, int depth_max = -1, int depth_min_ = -1,
             int votes_max_ = -1, float density = -1.0, int seed = 0,
-            const std::vector<int> &indices_test = {}) {
+            const std::vector<int> &indices_test = {}, bool skip_auto_tune=false) {
     if (target_recall < 0.0 - epsilon || target_recall > 1.0 + epsilon) {
       throw std::out_of_range("Target recall must be on the interval [0,1].");
     }
     std::cout << " major grow_sparse starting" << std::endl;
     grow_sparse(Q, n_test, k_, trees_max, depth_max, depth_min_, votes_max_, density,
-         seed, indices_test);
+         seed, indices_test, skip_auto_tune);
     std::cout << " major tree growing completed" << std::endl;
     prune(target_recall);
   }
@@ -305,7 +307,7 @@ public:
   void grow_autotune(double target_recall, int k_, int trees_max = -1,
                      int depth_max = -1, int depth_min_ = -1,
                      int votes_max_ = -1, float density_ = -1.0, int seed = 0,
-                     int n_test = 100) {
+                     int n_test = 100,bool skip_auto_tune=false) {
     if (n_test < 1) {
       throw std::out_of_range("Test set size must be > 0.");
     }
@@ -318,7 +320,7 @@ public:
        Eigen::SparseMatrix<float> Q = subset_sparse(indices_test);
        std::cout << " calling grow_sparse indices_test" << std::endl;
       grow_sparse(target_recall, Q,Q.cols(), k_, trees_max, depth_max,
-           depth_min_, votes_max_, density_, seed, indices_test);
+           depth_min_, votes_max_, density_, seed, indices_test,skip_auto_tune);
       std::cout << " calling grow_sparse completed" << std::endl;
 
     }else {
@@ -517,7 +519,7 @@ public:
   void grow_sparse(Eigen::SparseMatrix<float>& Q, int n_test, int k_, int trees_max = -1,
             int depth_max = -1, int depth_min_ = -1, int votes_max_ = -1,
             float density_ = -1.0, int seed = 0,
-            const std::vector<int> &indices_test = {}) {
+            const std::vector<int> &indices_test = {},bool skip_auto_tune=false) {
 
     if (trees_max == -1) {
       trees_max = std::min(std::sqrt(n_samples), 1000.0);
@@ -613,12 +615,12 @@ public:
       recalls[d - depth_min] /= (k * n_test);
       cs_sizes[d - depth_min] /= n_test;
     }
-    std::cout<<"calling fit times sparse"<<std::endl;
-    fit_times_sparse(Q);
-    std::cout<<"calling fit times sparse completed"<<std::endl;
-    std::set<MrptSparse_Parameters, decltype(is_faster) *> pars =
-        list_parameters(recalls);
-    opt_pars = pareto_frontier(pars);
+    if (!skip_auto_tune) {
+      fit_times_sparse(Q);
+      std::set<MrptSparse_Parameters, decltype(is_faster) *> pars =
+          list_parameters(recalls);
+      opt_pars = pareto_frontier(pars);
+    }
 
     index_type = autotuned_unpruned;
     par.k = k_;
@@ -1110,6 +1112,55 @@ public:
     exact_knn_sparse(q, k, elected, n_elected, out, out_distances);
   }
 
+
+  void build_knng_graph(std::vector<hipgraph::distviz::common::Tuple<float>> *output_knng){
+    Eigen::MatrixXi neighbours(X_Sparse.cols(),k);
+    Eigen::MatrixXf distances(X_Sparse.cols(),k);
+    int vote_threshold = 1;
+    int max_leaf_size = n_samples / (1 << depth) + 1;
+    int elected_size = n_trees * max_leaf_size;
+     #pragma omp parallel for schedule(static)
+    for(int i=0;i<index_to_tree_leaf_match.size();i++){
+      int n_elected = 0;
+      Eigen::VectorXi elected(elected_size);
+      Eigen::VectorXi votes_vec = Eigen::VectorXi::Zero(n_samples);
+      Eigen::VectorXi neighbour(k);
+      Eigen::VectorXf distance(k);
+      if (vote_threshold <= 0 || vote_threshold > n_trees) {
+        throw std::out_of_range(
+            "vote_threshold must belong to the set {1, ... , n_trees}.");
+      }
+      for(int n_tree=0;n_tree<index_to_tree_leaf_match[i].size();++n_tree){
+        int leaf_begin = leaf_first_indices[index_to_tree_leaf_match[i][n_tree]];
+        int leaf_end = leaf_first_indices[index_to_tree_leaf_match[i][n_tree] + 1];
+        const std::vector<int> &indices = tree_leaves[n_tree];
+        if (tree_leaves[n_tree].size()==n_samples) {
+          for (int j = leaf_begin; j < leaf_end; ++j) {
+            int idx = indices[j];
+            if (++votes_vec(idx) == vote_threshold) {
+              elected(n_elected++) = idx;
+            }
+          }
+        }
+      }
+      Eigen::SparseVector<float> q = X_Sparse.col(i);
+      exact_knn_sparse(q,k, elected, n_elected, neighbour.data(), distance.data());
+      neighbours.row(i)=neighbour;
+      distances.row(i)=distance;
+    }
+
+    #pragma omp parallel for schedule(static)
+    for(int i=0;i<X_Sparse.cols()*k;i++){
+          int node_index = i/k;
+          int nn_index = i%k;
+          hipgraph::distviz::common::Tuple<float> edge;
+          edge.row = node_index;
+          edge.col =   neighbours(node_index,nn_index);
+          edge.value = distances(node_index,nn_index);
+          (*output_knng)[i]  = edge;
+    }
+  }
+
   /**@}*/
 
   /** @name Exact k-nn search
@@ -1384,8 +1435,18 @@ private:
     int idx_left = 2 * i + 1;
     int idx_right = idx_left + 1;
 
-    if (tree_level == depth)
+    if (tree_level == depth){
+      const std::vector<int> &indices = tree_leaves[n_tree];
+      for(int leaf_i=0;leaf_i<leaf_first_indices.size()-1;leaf_i++){
+        int leaf_begin = leaf_first_indices[leaf_i];
+        int leaf_end = leaf_first_indices[leaf_i+1];
+        for (int j = leaf_begin; j < leaf_end; ++j) {
+          int idx = indices[j];
+          index_to_tree_leaf_match[idx][n_tree] = leaf_i;
+        }
+      }
       return;
+    }
 
     std::nth_element(begin, begin + n / 2, end,
                      [&tree_projections, tree_level](int i1, int i2) {
@@ -1407,8 +1468,7 @@ private:
                                 2.0;
     }
 
-    grow_subtree(begin, mid, tree_level + 1, idx_left, n_tree,
-                 tree_projections);
+    grow_subtree(begin, mid, tree_level + 1, idx_left, n_tree, tree_projections);
     grow_subtree(mid, end, tree_level + 1, idx_right, n_tree, tree_projections);
   }
 
@@ -1486,7 +1546,7 @@ private:
 
     Eigen::VectorXf distances(n_elected);
 
-#pragma omp parallel for
+    #pragma omp parallel for
     for (int i = 0; i < n_elected; ++i) {
       Eigen::SparseVector<float> diff = X_Sparse.col(indices(i)) - q;
       distances(i) = diff.squaredNorm();
@@ -2480,6 +2540,7 @@ private:
       leaf_first_indices_all; // first indices for each level
   std::vector<int>
       leaf_first_indices; // first indices of each leaf of tree in tree_leaves
+  std::vector<std::vector<int>> index_to_tree_leaf_match;
 
   const int n_samples; // sample size of data
   const int dim;       // dimension of data

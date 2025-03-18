@@ -144,7 +144,13 @@ void prefix_sum(vector<int> &values, vector<int> &offsets);
 
 size_t get_memory_usage();
 
-int32_t tau_rand_int(int64_t state[3]);
+uint64_t  tau_rand_int(std::array<uint64_t,4> shuffle_table);
+
+
+
+void initialize_shuffle_table(std::array<uint64_t,4>& shuffle_table);
+
+uint64_t xorshift64(uint64_t* state);
 
 void reset_performance_timers();
 
@@ -171,11 +177,47 @@ std::unordered_set<uint64_t> random_select(const std::unordered_set<uint64_t>& o
 
 
 
-template <typename T> struct Tuple {
-  int64_t row;
-  int64_t col;
-  T value;
+template <typename T>
+struct Tuple {
+    int64_t row;
+    int64_t col;
+    T value;
+
+    // Default Constructor
+    Tuple() = default;
+
+    // Parameterized Constructor
+    Tuple(int64_t r, int64_t c, T v) : row(r), col(c), value(v) {}
+
+    // Copy Constructor
+    Tuple(const Tuple<T>& other)
+            : row(other.row), col(other.col), value(other.value) {}
+
+    // Copy Assignment Operator
+    Tuple<T>& operator=(const Tuple<T>& other) {
+        if (this != &other) {
+            row = other.row;
+            col = other.col;
+            value = other.value;
+        }
+        return *this;
+    }
+
+    // Move Constructor
+    Tuple(Tuple<T>&& other) noexcept
+            : row(other.row), col(other.col), value(std::move(other.value)) {}
+
+    // Move Assignment Operator
+    Tuple<T>& operator=(Tuple<T>&& other) noexcept {
+        if (this != &other) {
+            row = other.row;
+            col = other.col;
+            value = std::move(other.value);
+        }
+        return *this;
+    }
 };
+
 
 template <typename T> struct CSR {
   int64_t row;
@@ -211,7 +253,7 @@ bool CompareTuple(const Tuple<T>& obj1, const Tuple<T>& obj2) {
 }
 
 // TODO: removed reference type due to binding issue
-template <typename T> bool column_major(Tuple<T> a, Tuple<T> b) {
+template <typename T> bool column_major(Tuple<T>& a, Tuple<T>& b) {
   if (a.col == b.col) {
     return a.row < b.row;
   } else {
@@ -219,7 +261,7 @@ template <typename T> bool column_major(Tuple<T> a, Tuple<T> b) {
   }
 }
 
-template <typename T> bool row_major(Tuple<T> a, Tuple<T> b) {
+template <typename T> bool row_major(Tuple<T>& a, Tuple<T>& b) {
   if (a.row == b.row) {
     return a.col < b.col;
   } else {

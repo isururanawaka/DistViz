@@ -44,6 +44,8 @@ public:
     int world_size = process_3D_grid->col_world_size;
     int my_rank = process_3D_grid->rank_in_col;
 
+    cout<<" rank "<<process_3D_grid->rank_in_col<<" size "<<sp_mat->coords->size()<<endl;
+
     Tuple<VALUE_TYPE> *sendbuf = new Tuple<VALUE_TYPE>[sp_mat->coords->size()];
 
     if (world_size > 1) {
@@ -54,17 +56,22 @@ public:
 
       vector<Tuple<VALUE_TYPE>>* coords = sp_mat->coords;
 
-
+        cout<<"passing barrier 1 at partition_data"<<endl;
+        MPI_Barrier(process_3D_grid->col_world);
 
 #pragma omp parallel for
       for (int i = 0; i < (*coords).size(); i++) {
-        int owner = get_owner_Process((*coords)[i].row, (*coords)[i].col,
-                                      sp_mat->proc_row_width,
-                                      sp_mat->proc_col_width,
-                                      sp_mat->gCols,sp_mat->col_partitioned);
+          int owner = get_owner_Process((*coords)[i].row, (*coords)[i].col,
+                                        sp_mat->proc_row_width,
+                                        sp_mat->proc_col_width,
+                                        sp_mat->gCols, sp_mat->col_partitioned);
+
 #pragma omp atomic update
-        sendcounts[owner]++;
+              sendcounts[owner]++;
+
       }
+        cout<<"passing barrier 2 at partition_data"<<endl;
+        MPI_Barrier(process_3D_grid->col_world);
       prefix_sum(sendcounts, offsets);
       bufindices = offsets;
 
@@ -75,21 +82,24 @@ public:
                                       sp_mat->proc_col_width,
                                       sp_mat->gCols,sp_mat->col_partitioned);
 
-        int idx;
+              int idx;
 #pragma omp atomic capture
         idx = bufindices[owner]++;
 
-        //        sendbuf[idx].row = transpose ? coords[i].col : coords[i].row;
-        //        sendbuf[idx].col = transpose ? coords[i].row : coords[i].col;
         sendbuf[idx].row = (*coords)[i].row;
         sendbuf[idx].col = (*coords)[i].col;
         sendbuf[idx].value = (*coords)[i].value;
+
       }
 
+      cout<<" rank "<<process_3D_grid->rank_in_col<<" pre process completed "<<endl;
       // Broadcast the number of nonzeros that each processor is going to
       // receive
+
       MPI_Alltoall(sendcounts.data(), 1, MPI_INT, recvcounts.data(), 1, MPI_INT,
                    process_3D_grid->col_world);
+
+
 
       vector<int> recvoffsets;
       prefix_sum(recvcounts, recvoffsets);
@@ -99,22 +109,25 @@ public:
           std::accumulate(recvcounts.begin(), recvcounts.end(), 0);
 
       (*(sp_mat->coords)).resize(total_received_coords);
-
+      cout<<" rank "<<process_3D_grid->rank_in_col<<" second MPI processes started "<<endl;
       MPI_Alltoallv(sendbuf, sendcounts.data(), offsets.data(), SPTUPLE,
                     (*(sp_mat->coords)).data(), recvcounts.data(),
                     recvoffsets.data(), SPTUPLE, process_3D_grid->col_world);
+      cout<<" rank "<<process_3D_grid->rank_in_col<<" second MPI processes completed "<<total_received_coords<<endl;
+
 
       // TODO: Parallelize the sort routine?
-      if (sp_mat->transpose){
-        std::sort((*(sp_mat->coords)).begin(), (*(sp_mat->coords)).end(),column_major<VALUE_TYPE>);
-      } else {
-        std::sort((*(sp_mat->coords)).begin(), (*(sp_mat->coords)).end(),row_major<VALUE_TYPE>);
-      }
+      cout<<" rank "<<process_3D_grid->rank_in_col<<" sorting completed "<<endl;
     // This helps to speed up CSR creation
     }
 //    __gnu_parallel::sort((sp_mat->coords).begin(), (sp_mat->coords).end(),
 //                         column_major<T>);
 
+    if (sp_mat->transpose){
+      std::sort((*(sp_mat->coords)).begin(), (*(sp_mat->coords)).end(),column_major<VALUE_TYPE>);
+    } else {
+      std::sort((*(sp_mat->coords)).begin(), (*(sp_mat->coords)).end(),row_major<VALUE_TYPE>);
+    }
     delete[] sendbuf;
   }
 };

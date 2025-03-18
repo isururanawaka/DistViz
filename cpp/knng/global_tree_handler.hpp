@@ -541,6 +541,7 @@ public:
 
     int total_leaf_size = (1 << (tree_depth)) - (1 << (tree_depth - 1));
     int leafs_per_node = total_leaf_size / grid->col_world_size;
+    cout<<"total_leaf_size"<<total_leaf_size<<" leafs_per_node "<<leafs_per_node<<endl;
 
     for (int tree = 0; tree < ntrees; tree++) {
       int process = 0;

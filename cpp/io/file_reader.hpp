@@ -7,14 +7,22 @@
 #include <iostream>
 #include "../common/common.h"
 #include "../net/process_3D_grid.hpp"
+#include "CombBLAS/CombBLAS.h"
+#include "../embedding/sparse_mat.hpp"
 
 
 
 using namespace std;
 using namespace hipgraph::distviz::common;
 using namespace hipgraph::distviz::net;
+using namespace  hipgraph::distviz::embedding;
+using namespace combblas;
 namespace hipgraph::distviz::io {
-template <typename INDEX_TYPE,typename VALUE_TYPE>
+
+
+
+
+template <typename INDEX_TYPE,typename VALUE_TYPE, size_t DIM>
 class FileReader {
 
 public:
@@ -226,6 +234,57 @@ static void  read_fbin(string filename, ValueType2DVector<VALUE_TYPE>* datamatri
 
   file.seekg(start_idx * 4 * dim+offset, std::ios::beg);
   file.read(reinterpret_cast<char*>(data.data()), sizeof(float) * chunk_size * dim);
+  const float scaleParameter = 10;
+  cout<<" rank  "<<rank<<"  data reading  completed"<<endl;
+
+  for (INDEX_TYPE i = 0; i < chunk_size; ++i) {
+    std::vector<float> vec(dim);
+    std::copy(data.begin() + i * dim, data.begin() + (i + 1) * dim, vec.begin());
+    std::transform(vec.begin(), vec.end(), vec.begin(),
+                   [scaleParameter](float value) { return value * scaleParameter; });
+
+    (*datamatrix)[i]=vec;
+  }
+  cout<<" rank  "<<rank<<"  data loading completed"<<endl;
+}
+
+static void read_ubin(string filename, ValueType2DVector<VALUE_TYPE>* datamatrix,
+                       INDEX_TYPE no_of_datapoints,int dim, int rank, int world_size, INDEX_TYPE offset=8) {
+  cout<<" rank  "<<rank<<"  openinig file "<<filename<<endl;
+  std::ifstream file(filename, std::ios::binary);
+  cout<<" rank  "<<rank<<"  openinig file "<<filename<<endl;
+  if (!file.is_open()) {
+    // Handle file opening error
+    std::cerr << "Error: Unable to open the file " << filename << std::endl;
+    return;
+  }
+  cout<<" rank  "<<rank<<"  openinig completed "<<filename<<endl;
+  int nvecs=no_of_datapoints;
+
+  //  file.read(reinterpret_cast<char*>(&nvecs), sizeof(int));
+  //  file.read(reinterpret_cast<char*>(&dim), sizeof(int));
+  //
+  //  cout<<" rank  "<<rank<<"  nvecs "<<nvecs<<" dim "<<dim<<endl;
+
+  INDEX_TYPE chunk_size = no_of_datapoints / world_size;
+  INDEX_TYPE start_idx =rank*chunk_size;
+  INDEX_TYPE end_index = 0;
+  if (rank < world_size - 1){
+    end_index = (rank+1) * chunk_size -1;
+  }else if (rank == world_size - 1){
+    end_index = std::min((rank+1) * chunk_size -1,no_of_datapoints-1);
+    chunk_size = no_of_datapoints-(rank)*chunk_size;
+  }
+
+  if (chunk_size == -1) {
+    chunk_size = no_of_datapoints - start_idx;
+  }
+  datamatrix->resize(chunk_size, vector<VALUE_TYPE> (dim));
+  cout<<" rank  "<<rank<<"  selected chunk size  "<<chunk_size<<" starting "<<start_idx<<endl;
+  std::vector<uint8_t> data(chunk_size * dim);
+
+  file.seekg(start_idx * 1 * dim+offset, std::ios::beg);
+  file.read(reinterpret_cast<char*>(data.data()),  chunk_size * dim);
   const double scaleParameter = 100;
   cout<<" rank  "<<rank<<"  data reading  completed"<<endl;
 
@@ -233,11 +292,40 @@ static void  read_fbin(string filename, ValueType2DVector<VALUE_TYPE>* datamatri
     std::vector<float> vec(dim);
     std::copy(data.begin() + i * dim, data.begin() + (i + 1) * dim, vec.begin());
     std::transform(vec.begin(), vec.end(), vec.begin(),
-                   [scaleParameter](double value) { return value * scaleParameter; });
+                   [scaleParameter](float value) { return value * scaleParameter; });
 
     (*datamatrix)[i]=vec;
   }
-  cout<<" rank  "<<rank<<"  data loading completed"<<endl;
+}
+
+static void  read_txt(string filename, ValueType2DVector<VALUE_TYPE>* datamatrix,
+                     INDEX_TYPE no_of_datapoints,int dim, int rank, int world_size, INDEX_TYPE offset=8) {
+  std::ifstream infile(filename); // Open the file for reading
+  std::vector<std::vector<VALUE_TYPE>> data; // Vector to hold the loaded data
+
+  if (infile) {
+    std::string line;
+    while (std::getline(infile, line)) {
+      std::vector<VALUE_TYPE> row;
+      std::istringstream iss(line);
+      VALUE_TYPE value;
+
+      // Read each value (label followed by features)
+      while (iss >> value) {
+        row.push_back(value);
+      }
+
+      // Add the row (data vector) to the data vector
+      data.push_back(row);
+    }
+    datamatrix->resize(data.size());
+    for(int i=0;i<data.size();i++){
+      (*datamatrix)[i]=data[i];
+    }
+
+  } else {
+    std::cerr << "Error opening file: " << filename << std::endl;
+  }
 }
 
 
@@ -282,7 +370,7 @@ static void  read_fbin_sparse(string filename, Eigen::SparseMatrix<float, Eigen:
 
   file.seekg(start_idx * 4 * dim+offset, std::ios::beg);
   file.read(reinterpret_cast<char*>(data.data()), sizeof(float) * chunk_size * dim);
-  const double scaleParameter = 100;
+  const double scaleParameter = 1;
   cout<<" rank  "<<rank<<"  data reading  completed"<<endl;
 
   for (INDEX_TYPE i = 0; i < chunk_size; ++i) {
@@ -423,6 +511,104 @@ static void read_fbin_with_MPI(string filename, ValueType2DVector<VALUE_TYPE>* d
 
 //  fout.close();
   MPI_File_close(&file);
+}
+
+static void parallel_read_MM(string file_path, vector<Tuple<VALUE_TYPE>> *coords,
+                      bool copy_col_to_value) {
+  MPI_Comm WORLD;
+  MPI_Comm_dup(MPI_COMM_WORLD, &WORLD);
+
+  int proc_rank, num_procs;
+  MPI_Comm_rank(WORLD, &proc_rank);
+  MPI_Comm_size(WORLD, &num_procs);
+
+  shared_ptr<CommGrid> simpleGrid;
+  simpleGrid.reset(new CommGrid(WORLD, num_procs, 1));
+
+  SpParMat<int64_t, float, SpDCCols<int64_t, float>> G(simpleGrid);
+
+  INDEX_TYPE nnz;
+
+  G.ParallelReadMM(file_path, true, maximum<float>());
+
+  nnz = G.getnnz();
+  if (proc_rank == 0) {
+    cout << "File reader read " << nnz << " nonzeros." << endl;
+  }
+  SpTuples<int64_t, float> tups(G.seq());
+  tuple<int64_t, int64_t, float> *values = tups.tuples;
+
+
+  coords->resize(tups.getnnz());
+
+#pragma omp parallel for
+  for (int i = 0; i < tups.getnnz(); i++) {
+    (*coords)[i].row = get<0>(values[i]);
+    (*coords)[i].col = get<1>(values[i]);
+    if (copy_col_to_value) {
+      (*coords)[i].value = get<1>(values[i]);
+    } else {
+      (*coords)[i].value = get<2>(values[i]);
+    }
+  }
+
+  int rowIncrement = G.getnrow() / num_procs;
+
+#pragma omp parallel for
+  for (int i = 0; i < (*coords).size(); i++) {
+    (*coords)[i].row += rowIncrement * proc_rank;
+  }
+}
+
+static void read_txt_dist(std::string filename, VALUE_TYPE* nCoordinates,
+                          int no_of_datapoints, int dim, int rank, int world_size, INDEX_TYPE offset = 0) {
+  std::cout << "Rank " << rank << " opening file " << filename << std::endl;
+  std::ifstream file(filename);
+
+  if (!file.is_open()) {
+    // Handle file opening error
+    std::cerr << "Error: Unable to open the file " << filename << std::endl;
+    return;
+  }
+  std::cout << "Rank " << rank << " opened file " << filename << std::endl;
+
+  INDEX_TYPE chunk_size = no_of_datapoints / world_size;
+  INDEX_TYPE start_idx = rank * chunk_size;
+  INDEX_TYPE end_index = 0;
+
+  if (rank < world_size - 1) {
+    end_index = (rank + 1) * chunk_size - 1;
+  } else if (rank == world_size - 1) {
+    end_index = std::min((rank + 1) * chunk_size - 1, no_of_datapoints - 1);
+    chunk_size = no_of_datapoints - rank * chunk_size;
+  }
+
+  if (chunk_size == -1) {
+    chunk_size = no_of_datapoints - start_idx;
+  }
+
+  std::cout << "Rank " << rank << " selected chunk size " << chunk_size << " starting " << start_idx << std::endl;
+
+  // Skip lines up to start_idx
+  std::string line;
+  for (INDEX_TYPE i = 0; i < start_idx + offset && std::getline(file, line); ++i);
+
+  // Read and parse the data
+  for (INDEX_TYPE i = 0; i < chunk_size; ++i) {
+    if (std::getline(file, line)) {
+      std::istringstream ss(line);
+      int nodeId;
+      VALUE_TYPE value1, value2;
+
+      ss >> nodeId >> value1 >> value2;  // Read nodeId and values
+
+      // Store values in row-major order
+      nCoordinates[i * dim] = value1;
+      nCoordinates[i * dim + 1] = value2;
+    }
+  }
+
+  std::cout << "Rank " << rank << " data reading completed" << std::endl;
 }
 
 

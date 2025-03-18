@@ -31,37 +31,44 @@ class MathOp {
     return result;
   }
 
-  VALUE_TYPE *build_sparse_local_random_matrix(int rows, int cols,float density, int seed){
+  VALUE_TYPE *build_sparse_local_random_matrix(int rows, int cols,float density, uint64_t seed){
 
     VALUE_TYPE *A;
     uint64_t size = rows * cols;
     A = (VALUE_TYPE *) malloc (sizeof (VALUE_TYPE) * size);
 
-    std::mt19937 gen (seed);
+    std::mt19937 gen1 (seed);
+    std::mt19937 gen2 (seed);
     std::uniform_real_distribution<float> uni_dist (0, 1);
     std::normal_distribution<float> norm_dist (0, 1);
-
+    float lower_bound = -2;  // For example, -2.0
+    float upper_bound = 2;
     //follow row major order
     for (int j = 0; j < rows; ++j)
     {
       for (int i = 0; i < cols; ++i)
       {
         // take value at uniformly at random and check value is greater than density.If so make that entry empty.
-        if (uni_dist (gen) > density)
+        if (uni_dist (gen1) > density)
         {
           A[i + j * cols] = 0.0;
         }
         else
         {
           // normal distribution for generate projection matrix.
-          A[i + j * cols] = (VALUE_TYPE) norm_dist (gen);
+            float value;
+            do {
+                value = norm_dist(gen2);
+            } while (value < lower_bound || value > upper_bound);  // Reject values outside bounds
+
+            A[i + j * cols] = value;
         }
       }
     }
     return A;
   }
 
-  VALUE_TYPE *build_sparse_projection_matrix(int total_dimension, int levels,float density, int seed){
+  VALUE_TYPE *build_sparse_projection_matrix(int total_dimension, int levels,float density, uint64_t seed){
 
     VALUE_TYPE *local_sparse_matrix = this->build_sparse_local_random_matrix (total_dimension, levels, density, seed);
 

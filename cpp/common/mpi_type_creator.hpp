@@ -178,12 +178,7 @@ auto CreateCustomMpiType(const Ts &...all)
 
   MPI_Datatype CustomType;
 
-//  cout<<" size "<<typeInfo.size<<endl;
-//  for(int i=0;i<typeInfo.size;i++){
-//    cout<<" blocklengths "<<typeInfo.blocklengths[i]<<endl;
-//    cout<<" displacements "<<typeInfo.displacements[i]<<endl;
-//    cout<<" types "<<typeInfo.types[i]<<endl;
-//  }
+
 
   MPI_Type_create_struct(typeInfo.size, typeInfo.blocklengths.data(), typeInfo.displacements.data(), typeInfo.types.data(), &CustomType);
   MPI_Type_commit(&CustomType);
